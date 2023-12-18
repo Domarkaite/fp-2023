@@ -8,14 +8,14 @@ module Lib4
     ParsedStatement3, 
     parseStatement,
     SqlStatement(..), 
-    SqlTableFromYaml,
+    SqlTableFromYAML,
     fromStatement,
     toTable,
     toDataframe
   ) 
 where
 
-import Lib2(dropWhiteSpaces, getOperand, stringToInt, isNumber, areSpacesBetweenWords, splitStatementAtParentheses, tableNameParser)
+import Lib2(dropWhiteSpaces, getOperand, stringToInt, isNumber, areSpacesBetweenWords, splitStatementAtParentheses, tableNameParser, getColumnName, getType, findColumnIndex)
 import Control.Applicative(Alternative(empty, (<|>)),optional, some, many)
 import Control.Monad.Trans.State.Strict (State, StateT, get, put, runState, runStateT, state)
 import Data.Char (toLower, GeneralCategory (ParagraphSeparator), isSpace, isAlphaNum, isDigit, digitToInt)
@@ -30,6 +30,7 @@ import Data.Yaml
 import GHC.Generics
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
+import DataFrame (DataFrame (..), Row, Column (..), ColumnType (..), Value (..))
 
 
 type ColumnName = String
@@ -146,22 +147,26 @@ data SqlException = SqlException {
   exception :: String
 } deriving (Generic)
 
--- data SqlTableFromYaml = SqlTableFromYaml {
---   tableYAML :: [ColumnFromYaml][RowFromYAML]
--- } deriving (Generic)
-
-data SqlTableFromYaml = SqlTableFromYaml {
-  columnsYAML :: [ColumnFromYaml],
-  rowsYAML :: [RowFromYAML]
+data SqlTableFromYAML = SqlTableFromYAML {
+  columnsYAML :: ColumnsFromYAML,
+  rowsYAML :: RowsFromYAML
 } deriving (Generic)
 
-data ColumnFromYaml = ColumnFromYaml{
+data ColumnsFromYAML = ColumnsFromYAML{
+  columnListYAML :: [ColumnFromYAML]
+  } deriving (Generic)
+
+data ColumnFromYAML = ColumnFromYAML{
   columnNameYAML :: String,
   columnTypeYAML :: String
 } deriving (Generic)
 
-data RowFromYAML = RowRromYAML{
-  rowYaml :: [ValueFromYAML]
+data RowsFromYAML = RowsFromYAML{
+  rowListYAML :: [RowFromYAML]
+  } deriving (Generic)
+
+data RowFromYAML = RowFromYAML{
+  rowYAML :: [ValueFromYAML]
 } deriving (Generic)
 
 data ValueFromYAML = ValueFromYAML{
@@ -172,21 +177,25 @@ data ValueFromYAML = ValueFromYAML{
 --patikrinto instances kai nebereks Data.Yaml, nes tada matysis ar fromJSON ar fromYAML palaiko ir kurios bybles pasiekia (man is kazkur aeson traukia) 
 instance FromJSON SqlException
 instance FromJSON SqlStatement
-instance FromJSON SqlTableFromYaml
-instance FromJSON ColumnFromYaml
+instance FromJSON SqlTableFromYAML
+instance FromJSON ColumnsFromYAML
+instance FromJSON RowsFromYAML
+instance FromJSON ColumnFromYAML
 instance FromJSON RowFromYAML
 instance FromJSON ValueFromYAML
 
 
 instance ToJSON SqlException
 instance ToJSON SqlStatement
-instance ToJSON SqlTableFromYaml
-instance ToJSON ColumnFromYaml
+instance ToJSON SqlTableFromYAML
+instance ToJSON ColumnsFromYAML
+instance ToJSON RowsFromYAML
+instance ToJSON ColumnFromYAML
 instance ToJSON RowFromYAML
 instance ToJSON ValueFromYAML
 --------------------------------------------
 -- also no clue ar tikra taip
-toTable :: String -> Maybe SqlTableFromYaml
+toTable :: String -> Maybe SqlTableFromYAML
 toTable yasm = decode $ BS.pack yasm
 
 toStatement :: String -> Maybe SqlStatement
@@ -195,7 +204,7 @@ toStatement yasm = decode $ BS.pack yasm
 toException :: String -> Maybe SqlException
 toException yasm = decode $ BS.pack yasm
 
-fromTable :: SqlTableFromYaml -> String
+fromTable :: SqlTableFromYAML -> String
 fromTable table = BS.unpack (encode table)
 
 fromStatement :: SqlStatement -> String
@@ -205,11 +214,12 @@ fromException :: SqlException -> String
 fromException exception = BS.unpack (encode exception)
 
 
-toDataframe :: SqlTableFromYaml -> DataFrame
+toDataframe :: SqlTableFromYAML -> DataFrame
 toDataframe table =
   DataFrame
-    (map (\col -> Column (columnNameYAML col) (toColumnType $ columnTypeYAML col)) $ columnsYAML table)
-    (map (map convertToValue . rowYaml) $ rowsYAML table)
+    (map (\col -> Column (columnNameYAML col) (toColumnType $ columnTypeYAML col)) $ columnListYAML $ columnsYAML table)
+    (map (map convertToValue . rowYAML) $ rowListYAML $ rowsYAML table)
+
 
 toColumnType :: String -> ColumnType
 toColumnType "IntegerType" = IntegerType
@@ -220,13 +230,77 @@ toColumnType _         = error "Unsupported data type"
 convertToValue :: ValueFromYAML -> DF.Value
 convertToValue (ValueFromYAML str) =
   case words str of
-    ["IntegerValue", val] -> IntegerValue (read val)
-    ["StringValue", val] -> StringValue val
-    ["BoolValue", "True"] -> BoolValue True
-    ["BoolValue", "False"] -> BoolValue False
-    ["NullValue"] -> NullValue
+    ["IntegerValue", val] -> DF.IntegerValue (read val)
+    ["StringValue", val] -> DF.StringValue val
+    ["BoolValue", "True"] -> DF.BoolValue True
+    ["BoolValue", "False"] -> DF.BoolValue False
+    ["NullValue"] -> DF.NullValue
     _ -> error "Invalid FromJSONValue format"
 
+fromDataFrame :: DataFrame -> SqlTableFromYAML
+fromDataFrame (DataFrame col row) = SqlTableFromYAML {
+  columnsYAML = fromColumns col,
+  rowsYAML = fromRows row
+}
+
+
+fromColumns :: [Column] -> ColumnsFromYAML
+fromColumns [] = ColumnsFromYAML { columnListYAML = [] }
+fromColumns (x:xs) = ColumnsFromYAML {
+  columnListYAML = fromColumn x : columnListYAML (fromColumns xs)
+}
+
+fromColumn :: Column -> ColumnFromYAML
+fromColumn (Column name colType) = ColumnFromYAML {
+  columnNameYAML = name,
+  columnTypeYAML = show colType
+}
+
+fromRows :: [Row] -> RowsFromYAML
+fromRows [] = RowsFromYAML {rowListYAML = []}
+fromRows (x:xs) = RowsFromYAML {
+  rowListYAML = fromRow x : rowListYAML (fromRows xs)
+}
+
+
+fromRow :: Row -> RowFromYAML
+fromRow [] = RowFromYAML { rowYAML = [] }
+fromRow (x:xs) = RowFromYAML {
+  rowYAML = fromValue x : rowYAML (fromRow xs)
+}
+
+
+fromValue :: DF.Value -> ValueFromYAML
+fromValue value = ValueFromYAML{
+  valueYAML = show value
+}
+
+
+-- fromRows :: Row -> RowFromYAML
+-- fromRows [] = []
+-- fromRows (x:xs) = RowFromYAML{
+--   rowYaml = [fromValue x] ++ fromRows xs
+-- }
+
+
+-- fromDataFrame :: DataFrame -> SqlTableFromYaml
+-- fromDataFrame (DataFrame cols rows) = SqlTableFromYaml {
+--   columnsYAML = fromColumns cols,
+--   rowsYAML = fromRows rows
+-- }
+
+-- fromColumns :: Column -> ColumnFromYaml
+-- fromColumns col = show (getColumnName col) show (getType col)
+
+-- columnsToColumn :: [Column] -> Column
+-- -- columnsToColumn [] = []
+-- columnsToColumn (x:xs)
+--   | xs /= [] =  x ++ columnsToColumn xs
+--   | otherwise = x
+
+
+
+-- fromRow ::
 
 -----------------for communication ends----------------
 
@@ -470,6 +544,143 @@ ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
     tryParseSymbol = do
       _ <- optional whitespaceParser
       return $ Asc "asc"
+
+
+
+
+
+
+---------------------------------------- I ORDER YOU BY THE POWER OF ----------------------------------------
+
+-- orderBy :: DataFrame -> OrderBy -> DataFrame
+-- orderBy df (x:xs) = "do later"
+
+
+---------------------------------------- DA SORT IS REAL, AND BUBBLY -----------------------------------------
+
+-- bubbleSort :: Ord a => [a] -> [a]
+-- bubbleSort [] = []
+-- bubbleSort [x] = [x]
+-- bubbleSort (x:y:xs) = if x > y then y : bubbleSort (x:xs) else x : bubbleSort (y:xs)
+
+-- isSorted :: Ord a => [a] -> Bool
+-- isSorted [] = True
+-- isSorted [x] = True
+-- isSorted (x:y:xs) = if x > y then False else isSorted (y:xs)
+
+-- bubbleSortMain :: Ord a => [a] -> [a]
+-- bubbleSortMain list = if isSorted list then list else bubbleSortMain (bubbleSort list)
+
+
+
+-- sortRows :: OrderBy -> DataFrame -> DataFrame
+
+-----data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer 
+ 
+
+-- getIndexOrderBy :: OrderBy -> DataFrame -> Int
+-- getIndexOrderBy orderBy df = if head (fst orderBy)  == ColumnTable (_, _) 
+--   then --- 
+--   else if head (fst orderBy)  == ColumnName _ 
+--     then findColumnIndex (getColumnNameFromOrderBy (head (fst orderBy)))
+--     else getColumnNumberFromOrderBy (head (fst orderBy))
+
+getColumnNameFromOrderBy :: [(OrderByValue, AscDesc)] -> ColumnName
+getColumnNameFromOrderBy ((ColumnName name ,ascdesc):xs) = name
+
+getColumnNumberFromOrderBy :: [(OrderByValue, AscDesc)] -> Int
+getColumnNumberFromOrderBy ((ColumnNumber int ,ascdesc):xs) = fromInteger int
+
+
+getColumnTableFromOrderBy :: [(OrderByValue, AscDesc)] -> ... -> Int
+getColumnTableFromOrderBy
+
+--OrderBy = [(OrderByValue, AscDesc)]
+getOneOrderBy :: [(value, ascdesc)] -> (value, ascdesc)  --- literaly head funkciaja.....
+getOneOrderBy ((value,ascdesc):xs) = (value, ascdesc)
+
+
+
+-- Compare values at a specific index in rows
+compareRows :: Int -> AscDesc -> Row -> Row -> Bool
+compareRows index ascdesc row1 row2 = 
+  if ascdesc == Asc "asc" 
+    then compareValuesAsc (row1 !! index) (row2 !! index)
+    else compareValuesDesc (row1 !! index) (row2 !! index)
+  
+
+-- Compare values of two Value types
+compareValuesAsc :: DF.Value -> DF.Value -> Bool
+compareValuesAsc (IntegerValue a) (IntegerValue b) = a > b
+compareValuesAsc (StringValue a) (StringValue b) = a > b
+compareValuesAsc (BoolValue a) (BoolValue b) = a > b
+compareValuesAsc NullValue _ = False
+compareValuesAsc _ NullValue = True
+compareValuesAsc _ _ = error "Unsupported comparison"
+
+compareValuesDesc :: DF.Value -> DF.Value -> Bool
+compareValuesDesc (IntegerValue a) (IntegerValue b) = a < b
+compareValuesDesc (StringValue a) (StringValue b) = a < b
+compareValuesDesc (BoolValue a) (BoolValue b) = a < b
+compareValuesDesc NullValue _ = True
+compareValuesDesc _ NullValue = False
+compareValuesDesc _ _ = error "Unsupported comparison"
+
+-- Bubble sort for rows based on values at a specific index
+bubbleSortRows :: Int -> AscDesc -> [Row] -> [Row]
+bubbleSortRows _ _ [] = []
+bubbleSortRows _ _ [x] = [x]
+bubbleSortRows index ascdesc (x:y:xs) =
+  if compareRows index ascdesc x y
+    then y : bubbleSortRows index ascdesc (x : xs)
+    else x : bubbleSortRows index ascdesc (y : xs)
+
+-- Check if a list of rows is sorted based on values at a specific index
+isRowsSorted :: Int -> AscDesc -> [Row] -> Bool
+isRowsSorted _ _ [] = True
+isRowsSorted _ _ [x] = True
+isRowsSorted index ascdesc (x:y:xs) =
+  if compareRows index ascdesc x y
+    then False
+    else isRowsSorted index ascdesc (y:xs)
+
+-- Bubble sort for rows with a main function
+bubbleSortRowsMain :: Int -> AscDesc -> [Row] -> [Row]
+bubbleSortRowsMain index ascdesc list =
+  if isRowsSorted index ascdesc list
+    then list
+    else bubbleSortRowsMain index ascdesc (bubbleSortRows index ascdesc list)
+
+
+-- bubbleSort :: [DF.Value] -> [DF.Value]
+-- bubbleSort [] = []
+-- bubbleSort [x] = [x]
+-- bubbleSort (x:y:xs) = if compareValues x y then y : bubbleSort (x:xs) else x : bubbleSort (y:xs)
+--   where
+--     compareValues :: DF.Value -> DF.Value -> Bool
+--     compareValues (IntegerValue a) (IntegerValue b) = a > b
+--     compareValues (StringValue a) (StringValue b) = a > b
+--     compareValues (BoolValue a) (BoolValue b) = a > b
+--     compareValues NullValue _ = False
+--     compareValues _ NullValue = True
+--     compareValues _ _ = error "Unsupported comparison"
+
+-- isSorted :: [DF.Value] -> Bool
+-- isSorted [] = True
+-- isSorted [x] = True
+-- isSorted (x:y:xs) = if compareValues x y then False else isSorted (y:xs)
+--   where
+--     compareValues :: DF.Value -> DF.Value -> Bool
+--     compareValues (IntegerValue a) (IntegerValue b) = a > b
+--     compareValues (StringValue a) (StringValue b) = a > b
+--     compareValues (BoolValue a) (BoolValue b) = a > b
+--     compareValues NullValue _ = False
+--     compareValues _ NullValue = True
+--     compareValues _ _ = error "Unsupported comparison"
+
+-- bubbleSortMain :: [DF.Value] -> [DF.Value]
+-- bubbleSortMain list = if isSorted list then list else bubbleSortMain (bubbleSort list)
+
 
 -----------------------------------------------------------------
 
