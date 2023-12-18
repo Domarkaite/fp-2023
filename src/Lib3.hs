@@ -22,7 +22,11 @@ module Lib3
     serializedContent,
     SelectedColumns(..),
     NowFunction,
-    FromJSONValue
+    FromJSONValue,
+    findColumnTableIndex,
+    CartesianColumn(..),
+    CartesianDataFrame(..),
+    deCartesianColumns
   )
 where
 import Lib2

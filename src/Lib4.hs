@@ -16,6 +16,7 @@ module Lib4
 where
 
 import Lib2(dropWhiteSpaces, getOperand, stringToInt, isNumber, areSpacesBetweenWords, splitStatementAtParentheses, tableNameParser, getColumnName, getType, findColumnIndex)
+import Lib3(findColumnTableIndex, CartesianColumn(..), CartesianDataFrame(..), deCartesianColumns)
 import Control.Applicative(Alternative(empty, (<|>)),optional, some, many)
 import Control.Monad.Trans.State.Strict (State, StateT, get, put, runState, runStateT, state)
 import Data.Char (toLower, GeneralCategory (ParagraphSeparator), isSpace, isAlphaNum, isDigit, digitToInt)
@@ -576,24 +577,69 @@ ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
 -- sortRows :: OrderBy -> DataFrame -> DataFrame
 
 -----data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer 
- 
-
--- getIndexOrderBy :: OrderBy -> DataFrame -> Int
--- getIndexOrderBy orderBy df = if head (fst orderBy)  == ColumnTable (_, _) 
---   then --- 
---   else if head (fst orderBy)  == ColumnName _ 
---     then findColumnIndex (getColumnNameFromOrderBy (head (fst orderBy)))
---     else getColumnNumberFromOrderBy (head (fst orderBy))
-
-getColumnNameFromOrderBy :: [(OrderByValue, AscDesc)] -> ColumnName
-getColumnNameFromOrderBy ((ColumnName name ,ascdesc):xs) = name
-
-getColumnNumberFromOrderBy :: [(OrderByValue, AscDesc)] -> Int
-getColumnNumberFromOrderBy ((ColumnNumber int ,ascdesc):xs) = fromInteger int
 
 
-getColumnTableFromOrderBy :: [(OrderByValue, AscDesc)] -> ... -> Int
-getColumnTableFromOrderBy
+-- int is getColumnNumberFromOrderBy
+validateColumnNumber :: Int ->  [CartesianColumn] -> Bool
+validateColumnNumber int cols = 
+  case int > length cols || int < 1 of
+    True -> False
+    False -> True
+
+validateColumnName :: ColumnName -> [Column] -> Bool
+validateColumnName name cols = 
+  if (countOfName name cols 0) == 1
+    then True
+    else False
+
+countOfName :: ColumnName -> [Column] -> Int -> Int
+countOfName _ [] _ = -1
+countOfName name ((Column aName _ ):xs) index = 
+  if aName == name 
+    then (index + 1) + countOfName name xs index
+    else index + countOfName name xs index
+
+toCartesianColumns :: CartesianDataFrame -> [CartesianColumn]
+toCartesianColumns (CartesianDataFrame cols rows) = cols
+
+-- ddddddddd :: OrderBy -> [(value, ascdesc)]
+
+
+-- getIndexOrderBy :: OrderBy -> CartesianDataFrame -> Int
+-- getIndexOrderBy [] _ = []
+-- getIndexOrderBy ((orderByValue, ascdesc):xs) df = if fst (orderByValue, ascdesc) == ColumnTable  (_, _) 
+--   then getColumnTableFromOrderBy (orderByValue, ascdesc) df
+--   else if fst (orderByValue, ascdesc)  == ColumnName _ 
+--     then findColumnIndex (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df))
+--     else getColumnNumberFromOrderBy (orderByValue, ascdesc)
+
+getIndexOrderBy :: OrderBy -> CartesianDataFrame -> Int
+getIndexOrderBy [] _ = 0  -- Handle the case where the list is empty----------------------------------------------------------------------------------
+
+getIndexOrderBy ((orderByValue, ascdesc):xs) df
+    | isColumnTable orderByValue = getColumnTableFromOrderBy (orderByValue, ascdesc) df + getIndexOrderBy xs df
+    | isColumnName orderByValue = findColumnIndex (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df)) + getIndexOrderBy xs df
+    | otherwise = getColumnNumberFromOrderBy (orderByValue, ascdesc) + getIndexOrderBy xs df
+
+-- Helper functions to check the constructor of OrderByValue
+isColumnTable :: OrderByValue -> Bool
+isColumnTable (ColumnTable _) = True
+isColumnTable _ = False
+
+isColumnName :: OrderByValue -> Bool
+isColumnName (ColumnName _) = True
+isColumnName _ = False
+
+getColumnNameFromOrderBy :: (OrderByValue, AscDesc) -> ColumnName
+getColumnNameFromOrderBy (ColumnName name ,ascdesc) = name
+
+getColumnNumberFromOrderBy :: (OrderByValue, AscDesc) -> Int
+getColumnNumberFromOrderBy (ColumnNumber int ,ascdesc) = fromInteger int
+
+
+--reiks patikrinimo ar egzistuoja toks (tablename, columnname)
+getColumnTableFromOrderBy :: (OrderByValue, AscDesc) -> CartesianDataFrame -> Int
+getColumnTableFromOrderBy (ColumnTable (tablename, columnname), _) (CartesianDataFrame cols rows) = findColumnTableIndex columnname tablename cols
 
 --OrderBy = [(OrderByValue, AscDesc)]
 getOneOrderBy :: [(value, ascdesc)] -> (value, ascdesc)  --- literaly head funkciaja.....
