@@ -32,6 +32,8 @@ import GHC.Generics
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import DataFrame (DataFrame (..), Row, Column (..), ColumnType (..), Value (..))
+import Data.Either (fromRight)
+import Data.Bool (Bool(True))
 
 
 type ColumnName = String
@@ -579,6 +581,15 @@ ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
 -----data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer 
 
 
+
+
+toAscDescList :: OrderBy -> [AscDesc]
+toAscDescList ((orderByValue, ascdesc):xs)
+  | xs /= [] = [ascdesc] ++ toAscDescList xs
+  | otherwise = [ascdesc] 
+
+
+
 -- int is getColumnNumberFromOrderBy
 validateColumnNumber :: Int ->  [CartesianColumn] -> Bool
 validateColumnNumber int cols = 
@@ -599,27 +610,51 @@ countOfName name ((Column aName _ ):xs) index =
     then (index + 1) + countOfName name xs index
     else index + countOfName name xs index
 
+validateColumnTable :: [CartesianColumn] -> OrderByValue -> Bool
+validateColumnTable [] _ = False
+validateColumnTable cc@((CartesianColumn (table, Column name _)):xs) (ColumnTable (tableOr, columnOr)) = 
+  case table == tableOr && name == columnOr of
+    False -> validateColumnTable cc (ColumnTable (tableOr, columnOr))
+    True -> case countOfColumnTable cc (ColumnTable (tableOr, columnOr)) 0 of
+      1 -> True
+      _ -> False
+
+countOfColumnTable :: [CartesianColumn] -> OrderByValue -> Int -> Int
+countOfColumnTable [] _ i = i
+countOfColumnTable ((CartesianColumn (table, Column name _)):xs) (ColumnTable (tableOr, columnOr)) i =
+  case table == tableOr && name == columnOr of
+    True -> countOfColumnTable xs (ColumnTable (tableOr, columnOr)) (i + 1)
+    False -> countOfColumnTable xs (ColumnTable (tableOr, columnOr)) i
+
+
 toCartesianColumns :: CartesianDataFrame -> [CartesianColumn]
 toCartesianColumns (CartesianDataFrame cols rows) = cols
 
--- ddddddddd :: OrderBy -> [(value, ascdesc)]
 
 
--- getIndexOrderBy :: OrderBy -> CartesianDataFrame -> Int
--- getIndexOrderBy [] _ = []
--- getIndexOrderBy ((orderByValue, ascdesc):xs) df = if fst (orderByValue, ascdesc) == ColumnTable  (_, _) 
---   then getColumnTableFromOrderBy (orderByValue, ascdesc) df
---   else if fst (orderByValue, ascdesc)  == ColumnName _ 
---     then findColumnIndex (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df))
---     else getColumnNumberFromOrderBy (orderByValue, ascdesc)
+-- getIndexList :: OrderBy -> CartesianDataFrame -> [Int]
+-- getIndexList (x:xs) df
+--   | xs /= [] = fromRight  (getIndexOrderBy (x:xs) df) ++ getIndexList xs df
 
-getIndexOrderBy :: OrderBy -> CartesianDataFrame -> Int
-getIndexOrderBy [] _ = 0  -- Handle the case where the list is empty----------------------------------------------------------------------------------
 
+getIndexList :: OrderBy -> CartesianDataFrame -> [Int]
+getIndexList [] _ = []
+getIndexList (x:xs) df = case getIndexOrderBy (x:xs) df of
+  Right result -> result : getIndexList xs df
+  Left errMsg -> error errMsg  -- or handle the error appropriately
+
+
+getIndexOrderBy :: OrderBy -> CartesianDataFrame -> Either ErrorMessage Int
 getIndexOrderBy ((orderByValue, ascdesc):xs) df
-    | isColumnTable orderByValue = getColumnTableFromOrderBy (orderByValue, ascdesc) df + getIndexOrderBy xs df
-    | isColumnName orderByValue = findColumnIndex (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df)) + getIndexOrderBy xs df
-    | otherwise = getColumnNumberFromOrderBy (orderByValue, ascdesc) + getIndexOrderBy xs df
+    | isColumnTable orderByValue = if validateColumnTable (toCartesianColumns df) orderByValue
+        then Right (getColumnTableFromOrderBy (orderByValue, ascdesc) df)
+        else Left "Non valid table.column name"
+    | isColumnName orderByValue = if validateColumnName (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df))
+        then Right (findColumnIndex (getColumnNameFromOrderBy (orderByValue, ascdesc)) (deCartesianColumns (toCartesianColumns df)))
+        else Left "Non valid column name" 
+    | otherwise = if validateColumnNumber (getColumnNumberFromOrderBy (orderByValue, ascdesc)) (toCartesianColumns df)
+        then Right (getColumnNumberFromOrderBy (orderByValue, ascdesc))
+        else Left "Non valid orderBy index"
 
 -- Helper functions to check the constructor of OrderByValue
 isColumnTable :: OrderByValue -> Bool
@@ -641,11 +676,28 @@ getColumnNumberFromOrderBy (ColumnNumber int ,ascdesc) = fromInteger int
 getColumnTableFromOrderBy :: (OrderByValue, AscDesc) -> CartesianDataFrame -> Int
 getColumnTableFromOrderBy (ColumnTable (tablename, columnname), _) (CartesianDataFrame cols rows) = findColumnTableIndex columnname tablename cols
 
---OrderBy = [(OrderByValue, AscDesc)]
-getOneOrderBy :: [(value, ascdesc)] -> (value, ascdesc)  --- literaly head funkciaja.....
-getOneOrderBy ((value,ascdesc):xs) = (value, ascdesc)
+-- --OrderBy = [(OrderByValue, AscDesc)]
+-- getOneOrderBy :: [(value, ascdesc)] -> (value, ascdesc)  --- literaly head funkciaja.....
+-- getOneOrderBy ((value,ascdesc):xs) = (value, ascdesc)
 
 
+-- gal bandyti naudoti int patikrinimuo kuris orderby vyksta dabar??
+isNextOrderBy :: Int -> [Int] -> Bool
+isNextOrderBy nowOrder ints = if (length ints) >= (nowOrder + 1)
+  then True
+  else False
+
+getNextOrderByInt :: Int -> [Int] -> Int
+getNextOrderByInt nowOrder ints = 
+  case isNextOrderBy nowOrder ints of 
+    True -> (ints !! (nowOrder + 1))
+    False -> -1
+
+getNextOrderByAscDesc :: Int -> [Int] -> [AscDesc] -> AscDesc
+getNextOrderByAscDesc nowOrder ints ascdescs =
+  case isNextOrderBy nowOrder ints of 
+    True -> (ascdescs !! (nowOrder + 1))
+    False -> Asc "asc"
 
 -- Compare values at a specific index in rows
 compareRows :: Int -> AscDesc -> Row -> Row -> Bool
@@ -654,6 +706,7 @@ compareRows index ascdesc row1 row2 =
     then compareValuesAsc (row1 !! index) (row2 !! index)
     else compareValuesDesc (row1 !! index) (row2 !! index)
   
+ifEqual ::   
 
 -- Compare values of two Value types
 compareValuesAsc :: DF.Value -> DF.Value -> Bool
