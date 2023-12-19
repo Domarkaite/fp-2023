@@ -8,10 +8,19 @@ module Lib4
     ParsedStatement3, 
     parseStatement,
     SqlStatement(..), 
-    SqlTableFromYAML,
+    --SqlTableFromYAML, jei reiks - atkomentuoti
     fromStatement,
     toTable,
-    toDataframe
+    toDataframe,
+    SqlException(..),
+    SqlTableFromYAML(..),
+    fromException,
+    toStatement,
+    ValueFromYAML,
+    RowFromYAML,
+    ColumnFromYAML,
+    fromTable,
+    fromDataFrame
   ) 
 where
 
@@ -48,7 +57,7 @@ data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName 
 
 type OrderBy = [(OrderByValue, AscDesc)]
 
-type TableName = String 
+type TableName = String
 type FileContent = String
 type DeserializedContent = (TableName, DataFrame)
 type ErrorMessage = String
@@ -139,12 +148,11 @@ data ParsedStatement3 =
   | ShowTables { }
     deriving (Show, Eq)
 
+
 ------------------for communication starts-------------
-
-
 data SqlStatement = SqlStatement {
   statement :: String
-} deriving (Generic)
+} deriving (Generic, Show)
 
 data SqlException = SqlException {
   exception :: String
@@ -174,7 +182,7 @@ data RowFromYAML = RowFromYAML{
 
 data ValueFromYAML = ValueFromYAML{
   valueYAML :: String
-} deriving (Generic)
+} deriving (Generic, Show)
 
 --------------------------------------------
 --patikrinto instances kai nebereks Data.Yaml, nes tada matysis ar fromJSON ar fromYAML palaiko ir kurios bybles pasiekia (man is kazkur aeson traukia) 
@@ -232,20 +240,25 @@ toColumnType _         = error "Unsupported data type"
 
 convertToValue :: ValueFromYAML -> DF.Value
 convertToValue (ValueFromYAML str) =
-  case words str of
-    ["IntegerValue", val] -> DF.IntegerValue (read val)
-    ["StringValue", val] -> DF.StringValue val
-    ["BoolValue", "True"] -> DF.BoolValue True
-    ["BoolValue", "False"] -> DF.BoolValue False
-    ["NullValue"] -> DF.NullValue
-    _ -> error "Invalid FromJSONValue format"
+  case splitFirstWord str of
+    ("IntegerValue", val) -> DF.IntegerValue (read val)
+    ("StringValue", val) -> DF.StringValue val
+    ("BoolValue", "True") -> DF.BoolValue True
+    ("BoolValue", "False") -> DF.BoolValue False
+    ("NullValue", _) -> DF.NullValue
+    _ -> error $ "Invalid FromJSONValue format: " ++ str
+
+splitFirstWord :: String -> (String, String)
+splitFirstWord str =
+  case break (\c -> c == ' ' || c == '\t') str of
+    (first, rest) -> (first, dropWhile (\c -> c == ' ' || c == '\t') rest)
+
 
 fromDataFrame :: DataFrame -> SqlTableFromYAML
 fromDataFrame (DataFrame col row) = SqlTableFromYAML {
   columnsYAML = fromColumns col,
   rowsYAML = fromRows row
 }
-
 
 fromColumns :: [Column] -> ColumnsFromYAML
 fromColumns [] = ColumnsFromYAML { columnListYAML = [] }
@@ -277,7 +290,6 @@ fromValue :: DF.Value -> ValueFromYAML
 fromValue value = ValueFromYAML{
   valueYAML = show value
 }
-
 
 -- fromRows :: Row -> RowFromYAML
 -- fromRows [] = []
@@ -368,6 +380,7 @@ parseStatement input = do
                <|> selectNowParser
                <|> createTableParser
                <|> dropTableParser
+
 
 dropTableParser :: Parser4 ParsedStatement3
 dropTableParser = do
@@ -502,6 +515,7 @@ setParser = do
   _ <- whitespaceParser
   seperate whereConditionParser (optional whitespaceParser >> char ',' >> optional whitespaceParser)
 
+
 selectAllParser :: Parser4 ParsedStatement3
 selectAllParser = do
   _ <- queryStatementParser "select"
@@ -532,7 +546,6 @@ orderByParser = do
 orderByValueParser :: Parser4 OrderByValue
 orderByValueParser = do (ColumnTable <$> columnNameTableParser) <|> (ColumnName <$> columnNameParser) <|> (ColumnNumber <$> numberParser)
 
-
 ascDescParser :: Parser4 AscDesc
 ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
   where
@@ -547,11 +560,6 @@ ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
     tryParseSymbol = do
       _ <- optional whitespaceParser
       return $ Asc "asc"
-
-
-
-
-
 
 ---------------------------------------- I ORDER YOU BY THE POWER OF ----------------------------------------
 
@@ -824,6 +832,7 @@ selectNowParser = do
     _ <- queryStatementParser ")"
     pure SelectNow
 
+
 selectStatementParser :: Parser4 ParsedStatement3
 selectStatementParser = do
     _ <- queryStatementParser "select"
@@ -838,6 +847,7 @@ selectStatementParser = do
     orderBy <- optional orderByParser
     _ <- optional whitespaceParser
     pure $ Select specialSelect tableArray selectWhere orderBy
+
 
 selectDataParser :: Parser4 SpecialSelect2
 selectDataParser = tryParseAggregate <|>  tryParseColumn <|> tryParseColumnTable
@@ -1028,6 +1038,7 @@ char c = do
                             lift $ put xs 
                             return c
                         else throwE ("Expected " ++ [c])
+
 
 numberParser :: Parser4 Integer
 numberParser = do

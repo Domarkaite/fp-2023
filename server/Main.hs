@@ -4,16 +4,23 @@ module Main(main) where -- module Main(main) where
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..))
 
-import Web.Spock
-import Web.Spock.Config
+
+import Web.Scotty
+
 import Network.HTTP.Types.Status
 import Control.Concurrent.STM
+import Data.Text.Encoding (decodeUtf8)
 import Data.Functor((<&>))
 import Data.Time ( UTCTime, getCurrentTime )
 import Data.List qualified as L
 import Lib1 qualified
 import Lib2 qualified
+import qualified Data.ByteString.Lazy.Char8 as BS8
+import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Internal as BSInternal
 import Lib3 qualified
+import Lib4 qualified
+import Data.Text.Lazy (fromStrict, pack)
 import DataFrame
 import InMemoryTables
 import System.Console.Repline
@@ -28,6 +35,7 @@ import Lib2 (tableNameParser)
 import System.Directory (doesFileExist, getDirectoryContents)
 import System.FilePath (pathSeparator)
 import Data.Yaml
+import Debug.Trace
 
 type ThreadSafeTable = TVar (TableName, DataFrame)
 type ThreadSafeDataBase = TVar [ThreadSafeTable]
@@ -37,55 +45,60 @@ data MyAppState = MyAppState
     { appDatabase :: ThreadSafeDataBase
     }
 
-
-
 main :: IO ()
 main = do
-    table1 <- newTVarIO ("Table1",  DataFrame [Column "flag" StringType] [[StringValue "a"], [StringValue "b"]])
-    table2 <- newTVarIO ("Table2", DataFrame [Column "value" BoolType][[BoolValue True],[BoolValue True],[BoolValue False]])
+    table3 <- newTVarIO ("Table1", DataFrame [Column "flag" StringType] [[StringValue "a"], [StringValue "b"]])
+    table2 <- newTVarIO ("Table2", DataFrame [Column "value" BoolType] [[BoolValue True], [BoolValue True], [BoolValue False]])
 
-    let initialDatabase = newTVarIO [table1, table2]
+    -- Create individual TVar tables
+    let tableList = [table3, table2]
 
-    spockCfg <- defaultSpockCfg () PCNoDatabase (MyAppState <$> initialDatabase)
+    -- Create ThreadSafeTable from the list of TVar tables
+    let initialDatabase = newTVarIO tableList
 
-    runSpock 1395 (spock spockCfg app)
+    -- Extract the TVar value from the IO action
+    threadSafeDatabase <- initialDatabase
+
+    scotty 3000 $ do
+        post "/query" $ do
+          requestBody <- body
+          -- Trace the requestBody for debugging
+          let requestBodyStrict = BS.toStrict requestBody
+
+        -- Trace the requestBody for debugging
+          liftIO $ traceIO $ "Request Body: " ++ show (decodeUtf8 requestBodyStrict)
+
+          let parsed = Lib4.toStatement (BS8.unpack requestBody)
+          -- Trace the parsed value for debugging
+          liftIO $ traceIO $ "Parsed Value: " ++ show parsed
+
+          case parsed of
+              Just query -> do
+                  executionResult <- liftIO $ runExecuteIO threadSafeDatabase $ Lib3.executeSql (Lib4.statement query)
+                  case executionResult of
+                      Right res -> do
+                          let result = Lib4.fromTable (Lib4.fromDataFrame res)
+                          text (pack result)
+                      
+              Nothing -> do
+                  let exception = Lib4.SqlException {Lib4.exception = "The query could not be decoded"}
+                  let errorMessage = Lib4.fromException exception
+                  text (pack errorMessage)
 
 
-
-app :: SpockM () () AppState ()
-app = do
-  post root $ do
-    appState <- getState
-    mreq <- yamlBody
-    case mreq of
-      Just req -> do
-        result <- liftIO $ runExecuteIO (db appState) $ Lib3.executeSql $ query req
-        case result of
-          Left err -> do
-            setStatus badRequest400
-            FromJSON SqlErrorResponse { errorMessage = err }
-          Right df -> do
-            FromJSON SqlTableFromYaml { dataFrame = df }
-      Nothing -> do
-        setStatus badRequest400
-        FromJSON SqlException { exception = "Request body format is incorrect." }
-      
-
-
--- need this, need to change this 
-runExecuteIO :: Lib3.Execution r -> IO r
-runExecuteIO (Pure r) = return r
-runExecuteIO (Free step) = do
-    next <- runStep step
-    runExecuteIO next
+runExecuteIO :: ThreadSafeDataBase -> Lib3.Execution r -> IO r
+runExecuteIO dataB (Pure r) = return r
+runExecuteIO dataB (Free step) = do
+    next <- runStep dataB step
+    runExecuteIO dataB next
     where
         -- probably you will want to extend the interpreter
-        runStep :: Lib3.ExecutionAlgebra a -> IO a
-        runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
-        runStep (Lib3.GetTables next) = do
+        runStep :: ThreadSafeDataBase -> Lib3.ExecutionAlgebra a -> IO a
+        runStep dataB (Lib3.GetTime next) = getCurrentTime >>= return . next
+        runStep dataB (Lib3.GetTables next) = do
           list <- getDirectoryContents "db"
           return $ next $ map (\str -> take ((length str) - 5) str)  $ init $ init list
-        runStep (Lib3.LoadFile tableName next) = do
+        runStep dataB (Lib3.LoadFile tableName next) = do
           let filePath = toFilePath tableName
           exists <- doesFileExist filePath
           if exists
@@ -93,7 +106,7 @@ runExecuteIO (Free step) = do
               fileContent <- readFile filePath
               return $ next $ Lib3.deserializedContent fileContent
             else return $ next $ Left $ "File '" ++ tableName ++ "' does not exist"
-        runStep (Lib3.SaveFile table next) = do
+        runStep dataB (Lib3.SaveFile table next) = do
           case Lib3.serializedContent table of
             Right serializedContent -> writeFile (toFilePath (fst table)) serializedContent >>= return . next
             Left err -> error err
