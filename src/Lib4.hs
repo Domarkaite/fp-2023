@@ -42,8 +42,8 @@ type Parser4 a = EitherT Error (State String) a
 
 data AscDesc = Asc String | Desc String
   deriving (Show, Eq)
-
-data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer 
+--jei kliutu Integeris paseriui pakeisti i Int
+data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer
   deriving (Show, Eq)
 
 type OrderBy = [(OrderByValue, AscDesc)]
@@ -578,22 +578,29 @@ ascDescParser = tryParseDesc <|> tryParseAsc <|> tryParseSymbol
 
 -- sortRows :: OrderBy -> DataFrame -> DataFrame
 
------data OrderByValue = ColumnTable (TableName, ColumnName) | ColumnName ColumnName | ColumnNumber Integer 
+validateOrderBy :: [(OrderByValue, AscDesc)] -> CartesianDataFrame -> Bool
+validateOrderBy [] _ = True
+validateOrderBy ((order, _):xs) (CartesianDataFrame cols rows) = case order of
+  ColumnTable _ -> case validateColumnTable cols order of
+    True -> validateOrderBy xs (CartesianDataFrame cols rows)
+    False -> False
+  ColumnName name -> case validateColumnName name (deCartesianColumns cols) of
+    True -> validateOrderBy xs (CartesianDataFrame cols rows)
+    False -> False
+  ColumnNumber number -> case validateColumnNumber (fromInteger number) cols of
+    True -> validateOrderBy xs (CartesianDataFrame cols rows)
+    False -> False
 
-
-
-
+----------------------------------------------------------------
 toAscDescList :: OrderBy -> [AscDesc]
 toAscDescList ((orderByValue, ascdesc):xs)
   | xs /= [] = [ascdesc] ++ toAscDescList xs
   | otherwise = [ascdesc] 
 
-
-
 -- int is getColumnNumberFromOrderBy
 validateColumnNumber :: Int ->  [CartesianColumn] -> Bool
 validateColumnNumber int cols = 
-  case int > length cols || int < 1 of
+  case int > (length cols) - 1 || int < 0 of
     True -> False
     False -> True
 
@@ -629,13 +636,7 @@ countOfColumnTable ((CartesianColumn (table, Column name _)):xs) (ColumnTable (t
 
 toCartesianColumns :: CartesianDataFrame -> [CartesianColumn]
 toCartesianColumns (CartesianDataFrame cols rows) = cols
-
-
-
--- getIndexList :: OrderBy -> CartesianDataFrame -> [Int]
--- getIndexList (x:xs) df
---   | xs /= [] = fromRight  (getIndexOrderBy (x:xs) df) ++ getIndexList xs df
-
+--------------------------------------------------------------
 
 getIndexList :: OrderBy -> CartesianDataFrame -> [Int]
 getIndexList [] _ = []
@@ -676,72 +677,109 @@ getColumnNumberFromOrderBy (ColumnNumber int ,ascdesc) = fromInteger int
 getColumnTableFromOrderBy :: (OrderByValue, AscDesc) -> CartesianDataFrame -> Int
 getColumnTableFromOrderBy (ColumnTable (tablename, columnname), _) (CartesianDataFrame cols rows) = findColumnTableIndex columnname tablename cols
 
--- --OrderBy = [(OrderByValue, AscDesc)]
--- getOneOrderBy :: [(value, ascdesc)] -> (value, ascdesc)  --- literaly head funkciaja.....
--- getOneOrderBy ((value,ascdesc):xs) = (value, ascdesc)
-
-
 -- gal bandyti naudoti int patikrinimuo kuris orderby vyksta dabar??
-isNextOrderBy :: Int -> [Int] -> Bool
-isNextOrderBy nowOrder ints = if (length ints) >= (nowOrder + 1)
-  then True
-  else False
+-- isNextOrderBy :: Int -> [Int] -> Bool
+-- isNextOrderBy nowOrder ints = if (length ints) >= (nowOrder + 1)
+--   then True
+--   else False
 
-getNextOrderByInt :: Int -> [Int] -> Int
-getNextOrderByInt nowOrder ints = 
-  case isNextOrderBy nowOrder ints of 
-    True -> (ints !! (nowOrder + 1))
-    False -> -1
+-- getNextOrderByInt :: Int -> [Int] -> Int
+-- getNextOrderByInt nowOrder ints = 
+--   case isNextOrderBy nowOrder ints of 
+--     True -> (ints !! (nowOrder + 1))
+--     False -> -1
 
-getNextOrderByAscDesc :: Int -> [Int] -> [AscDesc] -> AscDesc
-getNextOrderByAscDesc nowOrder ints ascdescs =
-  case isNextOrderBy nowOrder ints of 
-    True -> (ascdescs !! (nowOrder + 1))
-    False -> Asc "asc"
+-- getNextOrderByAscDesc :: Int -> [Int] -> [AscDesc] -> AscDesc
+-- getNextOrderByAscDesc nowOrder ints ascdescs =
+--   case isNextOrderBy nowOrder ints of 
+--     True -> (ascdescs !! (nowOrder + 1))
+--     False -> Asc "asc"
 
--- Compare values at a specific index in rows
-compareRows :: Int -> AscDesc -> Row -> Row -> Bool
-compareRows index ascdesc row1 row2 = 
-  if ascdesc == Asc "asc" 
-    then compareValuesAsc (row1 !! index) (row2 !! index)
-    else compareValuesDesc (row1 !! index) (row2 !! index)
+-- -- Compare values at a specific index in rows --      lygu  ascdesc
+-- compareRows :: Int -> AscDesc -> Row -> Row -> Either Bool Bool
+-- compareRows index ascdesc row1 row2 = 
+--   case ifEqual (row1 !! index) (row2 !! index) of
+--     False -> if ascdesc == Asc "asc" 
+--       then Right $ compareValuesAsc (row1 !! index) (row2 !! index)
+--       else Right $ compareValuesDesc (row1 !! index) (row2 !! index)
+--     True -> Left True
   
-ifEqual ::   
+-- ifEqual :: DF.Value -> DF.Value -> Bool
+-- ifEqual (IntegerValue a) (IntegerValue b) = a == b
+-- ifEqual (StringValue a) (StringValue b) = a == b
+-- ifEqual (BoolValue a) (BoolValue b) = a == b
+-- ifEqual NullValue NullValue = True
+-- ifEqual NullValue _ = False
+-- ifEqual _ NullValue = False
+-- ifEqual _ _ = error "Unsupported comparison"
 
--- Compare values of two Value types
-compareValuesAsc :: DF.Value -> DF.Value -> Bool
-compareValuesAsc (IntegerValue a) (IntegerValue b) = a > b
-compareValuesAsc (StringValue a) (StringValue b) = a > b
-compareValuesAsc (BoolValue a) (BoolValue b) = a > b
-compareValuesAsc NullValue _ = False
-compareValuesAsc _ NullValue = True
-compareValuesAsc _ _ = error "Unsupported comparison"
+-- -- Compare values of two Value types
+-- compareValuesAsc :: DF.Value -> DF.Value -> Bool
+-- compareValuesAsc (IntegerValue a) (IntegerValue b) = a > b
+-- compareValuesAsc (StringValue a) (StringValue b) = a > b
+-- compareValuesAsc (BoolValue a) (BoolValue b) = a > b
+-- compareValuesAsc NullValue _ = False
+-- compareValuesAsc _ NullValue = True
+-- compareValuesAsc _ _ = error "Unsupported comparison"
 
-compareValuesDesc :: DF.Value -> DF.Value -> Bool
-compareValuesDesc (IntegerValue a) (IntegerValue b) = a < b
-compareValuesDesc (StringValue a) (StringValue b) = a < b
-compareValuesDesc (BoolValue a) (BoolValue b) = a < b
-compareValuesDesc NullValue _ = True
-compareValuesDesc _ NullValue = False
-compareValuesDesc _ _ = error "Unsupported comparison"
+-- compareValuesDesc :: DF.Value -> DF.Value -> Bool
+-- compareValuesDesc (IntegerValue a) (IntegerValue b) = a < b
+-- compareValuesDesc (StringValue a) (StringValue b) = a < b
+-- compareValuesDesc (BoolValue a) (BoolValue b) = a < b
+-- compareValuesDesc NullValue _ = True
+-- compareValuesDesc _ NullValue = False
+-- compareValuesDesc _ _ = error "Unsupported comparison"
+
+-- -- Bubble sort for rows based on values at a specific index
+-- bubbleSortRows :: Int -> [Int] -> [AscDesc] -> [Row] -> [Row]
+-- bubbleSortRows _ _ _ [] = []
+-- bubbleSortRows _ _ _ [x] = [x]
+-- bubbleSortRows index indexes ascdesc (x:y:xs) =
+--   case compareRows index (ascdesc !! index) x y of
+--     Right b -> if b
+--       then y : bubbleSortRows index indexes [(ascdesc !! index)] (x : xs)
+--       else x : bubbleSortRows index indexes [(ascdesc !! index)] (y : xs)
+--     Left True -> abc index indexes ascdesc ([x] ++ [y])
+
+-- abc :: Int -> [Int] -> [AscDesc] -> [Row] -> [Row]
+-- abc i indexes ascdesc rows = case isNextOrderBy i indexes of
+--   True -> bubbleSortRows (getNextOrderByInt i indexes) indexes ascdesc rows
+--   False -> rows
+
+-- -- Check if a list of rows is sorted based on values at a specific index
+-- isRowsSorted :: Int -> AscDesc -> [Row] -> Bool
+-- isRowsSorted _ _ [] = True
+-- isRowsSorted _ _ [x] = True
+-- isRowsSorted index ascdesc (x:y:xs) =
+--   case compareRows index ascdesc x y of
+--     Right b -> case b of
+--       True -> False
+--       False -> isRowsSorted index ascdesc (y:xs)
+--     Left _ -> case isNextOrderBy index indexes of
+
+
+-- -- Bubble sort for rows with a main function
+-- bubbleSortRowsMain :: Int -> [Int] -> [AscDesc] -> [Row] -> [Row]
+-- bubbleSortRowsMain index indexes ascdesc list =
+--   if isRowsSorted (indexes !! index) (ascdesc !! index) list
+--     then list
+--     else bubbleSortRowsMain index indexes ascdesc (bubbleSortRows index indexes ascdesc list)
+
+-----------------petras---------------------
+-- Compare values based on AscDesc
+compareValuesAscDesc :: AscDesc -> Row -> Row -> Ordering
+compareValuesAscDesc (Asc "asc") row1 row2 = compare row1 row2
+compareValuesAscDesc (Desc "desc") row1 row2 = compare row2 row1
+compareValuesAscDesc _ _ _ = error "Unsupported comparison"
 
 -- Bubble sort for rows based on values at a specific index
 bubbleSortRows :: Int -> AscDesc -> [Row] -> [Row]
 bubbleSortRows _ _ [] = []
 bubbleSortRows _ _ [x] = [x]
 bubbleSortRows index ascdesc (x:y:xs) =
-  if compareRows index ascdesc x y
-    then y : bubbleSortRows index ascdesc (x : xs)
-    else x : bubbleSortRows index ascdesc (y : xs)
-
--- Check if a list of rows is sorted based on values at a specific index
-isRowsSorted :: Int -> AscDesc -> [Row] -> Bool
-isRowsSorted _ _ [] = True
-isRowsSorted _ _ [x] = True
-isRowsSorted index ascdesc (x:y:xs) =
-  if compareRows index ascdesc x y
-    then False
-    else isRowsSorted index ascdesc (y:xs)
+  case compareRows index ascdesc x y of
+    GT -> y : bubbleSortRows index ascdesc (x : xs)
+    _  -> x : bubbleSortRows index ascdesc (y : xs)
 
 -- Bubble sort for rows with a main function
 bubbleSortRowsMain :: Int -> AscDesc -> [Row] -> [Row]
@@ -750,36 +788,28 @@ bubbleSortRowsMain index ascdesc list =
     then list
     else bubbleSortRowsMain index ascdesc (bubbleSortRows index ascdesc list)
 
+isNextOrderBy :: Int -> [a] -> Bool
+isNextOrderBy nowOrder list = length list > nowOrder
 
--- bubbleSort :: [DF.Value] -> [DF.Value]
--- bubbleSort [] = []
--- bubbleSort [x] = [x]
--- bubbleSort (x:y:xs) = if compareValues x y then y : bubbleSort (x:xs) else x : bubbleSort (y:xs)
---   where
---     compareValues :: DF.Value -> DF.Value -> Bool
---     compareValues (IntegerValue a) (IntegerValue b) = a > b
---     compareValues (StringValue a) (StringValue b) = a > b
---     compareValues (BoolValue a) (BoolValue b) = a > b
---     compareValues NullValue _ = False
---     compareValues _ NullValue = True
---     compareValues _ _ = error "Unsupported comparison"
+-- Get the value at the next order by
+getNextOrderBy :: Int -> [a] -> a
+getNextOrderBy nowOrder list = if isNextOrderBy nowOrder list
+  then list !! nowOrder
+  else error "Index out of bounds"
 
--- isSorted :: [DF.Value] -> Bool
--- isSorted [] = True
--- isSorted [x] = True
--- isSorted (x:y:xs) = if compareValues x y then False else isSorted (y:xs)
---   where
---     compareValues :: DF.Value -> DF.Value -> Bool
---     compareValues (IntegerValue a) (IntegerValue b) = a > b
---     compareValues (StringValue a) (StringValue b) = a > b
---     compareValues (BoolValue a) (BoolValue b) = a > b
---     compareValues NullValue _ = False
---     compareValues _ NullValue = True
---     compareValues _ _ = error "Unsupported comparison"
+-- Compare values at a specific index in rows
+compareRows :: Int -> AscDesc -> Row -> Row -> Ordering
+compareRows index ascdesc row1 row2 =
+  case compare (row1 !! index) (row2 !! index) of
+    EQ -> compareValuesAscDesc ascdesc row1 row2
+    result -> result
 
--- bubbleSortMain :: [DF.Value] -> [DF.Value]
--- bubbleSortMain list = if isSorted list then list else bubbleSortMain (bubbleSort list)
-
+isRowsSorted :: Int -> AscDesc -> [Row] -> Bool
+isRowsSorted _ _ [] = True
+isRowsSorted index ascdesc (x:y:xs) =
+  case compareRows index ascdesc x y of
+    GT -> False
+    _  -> isRowsSorted index ascdesc (y:xs)
 
 -----------------------------------------------------------------
 
